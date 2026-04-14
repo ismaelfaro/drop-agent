@@ -24,6 +24,11 @@ def get_converter_for_model(model_name):
     Raises:
         ValueError: If no converter found for model
     """
+    # Strip -GGUF suffix for converter lookup (GGUF repos don't have tokenizer files)
+    converter_model_name = model_name
+    if converter_model_name.upper().endswith("-GGUF"):
+        converter_model_name = converter_model_name[:-5]
+
     # Match pattern in model name
     for pattern, converter_class in CONVERTER_PATTERNS.items():
         if pattern in model_name.lower():
@@ -33,7 +38,7 @@ def get_converter_for_model(model_name):
                 return converter_class()
             elif converter_class == GraniteMessageConverter:
                 # GraniteMessageConverter needs model name for tokenizer
-                return converter_class(model_name)
+                return converter_class(converter_model_name)
 
     # No match found
     supported_patterns = ", ".join(CONVERTER_PATTERNS.keys())
