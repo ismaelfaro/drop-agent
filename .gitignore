@@ -13,3 +13,4 @@ set_environment.sh
 GPT-OSS-BrowseCompPlus-Eval/
 results/
 drop-agent.wiki
+/build
