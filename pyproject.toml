@@ -32,6 +32,12 @@ dependencies = [
     "tqdm",
 ]
 
+[project.optional-dependencies]
+metal = [
+    "llama-cpp-python",
+    "huggingface_hub",
+]
+
 [project.scripts]
 droplet = "droplet.main:main"
 

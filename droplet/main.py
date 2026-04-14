@@ -35,7 +35,7 @@ def build_agent_config():
 
     # Backend configuration
     parser.add_argument('-b', '--backend-type', type=str, default='ollama',
-                       choices=['ollama', 'vllm', 'rits-vllm'],
+                       choices=['ollama', 'vllm', 'rits-vllm', 'llama-cpp'],
                        help='Backend type (default: ollama)')
     parser.add_argument('-u', '--backend-url', type=str, default='http://localhost:11434',
                        help='Backend URL (default: http://localhost:11434 for Ollama, ignored for rits-vllm)')
@@ -80,6 +80,14 @@ def build_agent_config():
     parser.add_argument('--milvus-collection', type=str,
                        default=None,
                        help='Milvus collection name (default: nq_train_short_granite149m)')
+
+    # llama.cpp specific flags
+    parser.add_argument('--n-gpu-layers', type=int, default=None,
+                       help='Number of layers to offload to GPU for llama-cpp backend (default: auto-detect)')
+    parser.add_argument('--n-ctx', type=int, default=8192,
+                       help='Context window size for llama-cpp backend (default: 8192)')
+    parser.add_argument('--gguf-file', type=str, default=None,
+                       help='Specific GGUF filename to download from HuggingFace repo')
 
     # BCP specific flags
     parser.add_argument('--bcp-server-url', type=str, help='BCP search server URL (required for BCPBrowserTool, default: http://localhost:8000)')
@@ -185,6 +193,8 @@ def build_agent_config():
         backend_name = f"VLLMBackend ({args.backend_url})"
     elif args.backend_type == "ollama":
         backend_name = f"OllamaBackend ({args.backend_url})"
+    elif args.backend_type == "llama-cpp":
+        backend_name = f"LlamaCppBackend (Metal)"
     else:
         raise Exception(f"Unknown backend {args.backend_type}")
 
@@ -226,6 +236,9 @@ def build_agent_config():
         'context_compaction_threshold': args.context_compaction_threshold,
         'max_context_compactions': args.max_context_compactions,
         'compaction_keep_n': args.compaction_keep_n,
+        'n_gpu_layers': args.n_gpu_layers,
+        'n_ctx': args.n_ctx,
+        'gguf_file': args.gguf_file,
     }
 
     # Return cwd separately (not part of agent config)

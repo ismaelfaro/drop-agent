@@ -10,7 +10,7 @@ import time
 from openai_harmony import (Author, HarmonyError, Message, ReasoningEffort,
                             Role, SystemContent, TextContent)
 
-from droplet.backend import OllamaBackend, RITSBackend, VLLMBackend
+from droplet.backend import LlamaCppBackend, OllamaBackend, RITSBackend, VLLMBackend
 from droplet.converters import get_converter_for_model
 from droplet.generation_orchestrator import (Backend500Error,
                                              BackendConnectionError,
@@ -120,6 +120,10 @@ class DropletAgent:
         temperature=0.0,
         max_tokens=32768,
         max_iterations=10,
+        # llama.cpp
+        n_gpu_layers=None,
+        n_ctx=8192,
+        gguf_file=None,
         # context compaction
         context_compaction_method=None,
         context_compaction_threshold=64000,
@@ -167,8 +171,16 @@ class DropletAgent:
             if not rits_api_key:
                 raise RuntimeError("RITS API key is required for rits-vllm backend. Use --rits-api-key argument.")
             self.backend = RITSBackend(base_url=base_url, api_key=rits_api_key)
+        elif backend_type == "llama-cpp":
+            self.backend = LlamaCppBackend(
+                model_name=model,
+                n_gpu_layers=n_gpu_layers,
+                n_ctx=n_ctx,
+                gguf_file=gguf_file,
+                debug=debug,
+            )
         else:
-            raise RuntimeError(f"Unknown backend type: {backend_type}. Must be 'ollama', 'vllm', or 'rits-vllm'")
+            raise RuntimeError(f"Unknown backend type: {backend_type}. Must be 'ollama', 'vllm', 'rits-vllm', or 'llama-cpp'")
 
         self.backend.start()
         self.backend.ensure_model(model)
