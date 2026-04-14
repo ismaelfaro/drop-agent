@@ -36,31 +36,29 @@ Install via pip (needs at least Python 3.12), for example
     source .venv/bin/activate
     uv pip install git+ssh://git@github.com/IBM/drop-agent.git
 
-### Ollama Back-End
+### Back-Ends
 
-If you want to use Ollama as your backend (good option for local laptop usage), install the Ollama server, in OSX
+| Backend | Flag | Best for |
+|---------|------|----------|
+| Ollama | `-b ollama` | Local laptop with Ollama installed |
+| vLLM | `-b vllm` | Remote GPU server |
+| llama.cpp | `-b llama-cpp` | Apple Silicon Mac (Metal GPU) |
+| RITS | `-b rits-vllm` | IBM RITS service |
 
-    brew install ollama
+Quick start with each backend:
 
-To start Ollama now and restart at login:
+    # Ollama (default)
+    brew install ollama && brew services start ollama
+    droplet
 
-    brew services start ollama
-
-### vLLM Back-End
-
-if you have to launch vLLM yourself, you would run on $HOSTNAME
-
-    vllm serve $MODEL --host 0.0.0.0 --port $PORT
-
-If you have access to a vLLM server, run droplet with the vLLM backend:
-
+    # vLLM
     droplet -b vllm -m $MODEL -u http://${HOSTNAME}:${PORT}
 
-you can also use e.g. `--save-config remote-vllm` to store this config (with that port) for later use, with
+    # llama.cpp on Apple Silicon (no server needed)
+    CMAKE_ARGS="-DGGML_METAL=on" pip install droplet[metal]
+    droplet -b llama-cpp -m ibm-granite/granite-4.0-tiny-preview-GGUF
 
-    droplet -c remote-vllm
-
-any further arguments will override the defaults above
+See [docs/backends.md](docs/backends.md) for detailed configuration of each backend.
 
 ## Developer Install
 

@@ -1,5 +1,7 @@
-"""Backend server management for Ollama and vLLM"""
+"""Backend server management for Ollama, vLLM, and llama.cpp"""
 
+import os
+import platform
 import shutil
 import subprocess
 import time
@@ -480,4 +482,268 @@ class RITSBackend(VLLMBackend):
             "response": response_text,
             "context": context_tokens,
             "prompt_eval_count": len(prompt_token_ids),
+        }
+
+
+class LlamaCppBackend(BaseBackend):
+    """Backend using llama-cpp-python bindings with Metal GPU acceleration for Apple Silicon"""
+
+    def __init__(self, model_name, n_gpu_layers=None, n_ctx=8192, gguf_file=None, debug=False):
+        super().__init__("local://llama.cpp")
+        self.model_name = model_name
+        self.n_gpu_layers = n_gpu_layers
+        self.n_ctx = n_ctx
+        self.gguf_file = gguf_file
+        self.debug = debug
+        self.llm = None
+        self.model_path = None
+
+    def _detect_gpu_layers(self, model_path):
+        """Auto-detect optimal n_gpu_layers based on available memory on Apple Silicon"""
+        if platform.system() != "Darwin":
+            blue_print("Not on macOS — Metal acceleration unavailable, using CPU only")
+            return 0
+
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5
+            )
+            total_mem = int(result.stdout.strip())
+        except (subprocess.SubprocessError, ValueError):
+            blue_print("Could not detect system memory, defaulting to all layers on GPU")
+            return -1
+
+        available = total_mem * 0.6
+        model_size = os.path.getsize(model_path)
+
+        if model_size <= available:
+            return -1  # all layers on GPU
+
+        # Estimate total layers from GGUF metadata if possible, otherwise default to 40
+        estimated_layers = self._estimate_total_layers(model_path)
+        ratio = available / model_size
+        n_layers = max(1, int(estimated_layers * ratio))
+        blue_print(f"Model ({model_size / 1e9:.1f}GB) exceeds 60% of RAM ({total_mem / 1e9:.1f}GB) — offloading {n_layers}/{estimated_layers} layers to GPU")
+        return n_layers
+
+    def _estimate_total_layers(self, model_path):
+        """Estimate total layer count from GGUF metadata"""
+        try:
+            from llama_cpp import Llama
+            metadata = Llama.metadata(model_path)
+            for key in metadata:
+                if "block_count" in key:
+                    return int(metadata[key]) + 1  # +1 for output layer
+        except Exception:
+            pass
+        return 40  # conservative default
+
+    def _resolve_model_path(self):
+        """Resolve model name to a local GGUF file path, downloading from HF if needed"""
+        expanded = os.path.expanduser(self.model_name)
+        if expanded.endswith(".gguf") or os.path.isfile(expanded):
+            if not os.path.isfile(expanded):
+                raise RuntimeError(f"GGUF file not found: {expanded}")
+            return expanded
+
+        # HuggingFace repo ID
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
+        except ImportError:
+            raise RuntimeError(
+                "huggingface_hub is required to download models from HuggingFace.\n"
+                "Install with: pip install droplet[metal]"
+            )
+
+        repo_id = self.model_name
+        blue_print(f"Resolving GGUF model from HuggingFace: {repo_id}")
+
+        if self.gguf_file:
+            filename = self.gguf_file
+        else:
+            try:
+                files = list_repo_files(repo_id)
+            except Exception as e:
+                raise RuntimeError(f"Failed to list files in HuggingFace repo '{repo_id}': {e}")
+
+            gguf_files = [f for f in files if f.endswith(".gguf")]
+            if not gguf_files:
+                raise RuntimeError(f"No .gguf files found in repo '{repo_id}'")
+
+            # Prefer Q4_K_M quant
+            preferred = [f for f in gguf_files if "Q4_K_M" in f]
+            filename = preferred[0] if preferred else gguf_files[0]
+
+        # Check if already cached to skip download progress
+        try:
+            from huggingface_hub import try_to_load_from_cache
+            cached = try_to_load_from_cache(repo_id=repo_id, filename=filename)
+        except Exception:
+            cached = None
+
+        if cached and isinstance(cached, str):
+            blue_print(f"Using cached model: {cached}")
+            return cached
+
+        # Download with rich progress bar
+        import threading
+
+        from rich.progress import (BarColumn, DownloadColumn, Progress,
+                                   TextColumn, TimeRemainingColumn,
+                                   TransferSpeedColumn)
+
+        # Get file size from HF metadata for accurate progress
+        total_size = None
+        try:
+            from huggingface_hub import get_hf_file_metadata, hf_hub_url
+            url = hf_hub_url(repo_id=repo_id, filename=filename)
+            metadata = get_hf_file_metadata(url)
+            total_size = metadata.size
+        except Exception:
+            pass
+
+        progress = Progress(
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(bar_width=40),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+        )
+
+        # Suppress hf_hub's own tqdm bars
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+
+        download_result = [None]
+        download_error = [None]
+
+        def _download():
+            try:
+                download_result[0] = hf_hub_download(repo_id=repo_id, filename=filename)
+            except Exception as e:
+                download_error[0] = e
+
+        thread = threading.Thread(target=_download)
+
+        try:
+            with progress:
+                task_id = progress.add_task(filename, total=total_size)
+                thread.start()
+
+                # Poll the incomplete download file for progress
+                from huggingface_hub.constants import HF_HUB_CACHE
+                blob_dir = os.path.join(
+                    HF_HUB_CACHE,
+                    f"models--{repo_id.replace('/', '--')}",
+                    "blobs",
+                )
+
+                while thread.is_alive():
+                    # Look for .incomplete files being written
+                    if os.path.isdir(blob_dir):
+                        for f in os.listdir(blob_dir):
+                            if f.endswith(".incomplete"):
+                                fpath = os.path.join(blob_dir, f)
+                                try:
+                                    current = os.path.getsize(fpath)
+                                    progress.update(task_id, completed=current)
+                                except OSError:
+                                    pass
+                                break
+                    thread.join(timeout=0.3)
+
+                thread.join()
+
+                if download_error[0]:
+                    raise download_error[0]
+
+                local_path = download_result[0]
+
+                # Mark complete
+                file_size = os.path.getsize(local_path)
+                progress.update(task_id, total=file_size, completed=file_size)
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to download {filename} from '{repo_id}': {e}")
+        finally:
+            os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+
+        model_size = os.path.getsize(local_path)
+        blue_print(f"Model downloaded ({model_size / 1e9:.1f}GB): {local_path}")
+        return local_path
+
+    def start(self, timeout=30):
+        """Load the GGUF model into memory with Metal acceleration"""
+        try:
+            from llama_cpp import Llama
+        except ImportError:
+            raise RuntimeError(
+                "llama-cpp-python is required for the llama-cpp backend.\n"
+                "Install with: CMAKE_ARGS=\"-DGGML_METAL=on\" pip install droplet[metal]"
+            )
+
+        self.model_path = self._resolve_model_path()
+
+        if self.n_gpu_layers is not None:
+            n_gpu_layers = self.n_gpu_layers
+        else:
+            n_gpu_layers = self._detect_gpu_layers(self.model_path)
+
+        from rich.console import Console
+        from rich.live import Live
+        from rich.spinner import Spinner
+
+        blue_print(f"Loading model with n_gpu_layers={n_gpu_layers}, n_ctx={self.n_ctx}")
+
+        spinner = Spinner("dots", text="[bold blue]Loading model into memory (Metal GPU)...")
+        console = Console()
+
+        with Live(spinner, console=console, refresh_per_second=10):
+            self.llm = Llama(
+                model_path=self.model_path,
+                n_gpu_layers=n_gpu_layers,
+                n_ctx=self.n_ctx,
+                verbose=self.debug,
+            )
+
+        blue_print("Model loaded and ready")
+
+    def stop(self):
+        """Release the model from memory"""
+        if self.llm is not None:
+            del self.llm
+            self.llm = None
+
+    def ensure_model(self, model_name):
+        """Model is already loaded in start(), nothing to do"""
+        if self.llm is None:
+            raise RuntimeError("LlamaCpp model not loaded. Call start() first.")
+
+    def generate(self, prompt, model, options, timeout=300):
+        """
+        Generate completion using llama-cpp-python
+
+        Returns Ollama-compatible dict with 'response', 'context', and 'prompt_eval_count'
+        """
+        if self.llm is None:
+            raise RuntimeError("LlamaCpp model not loaded. Call start() first.")
+
+        prompt_tokens = self.llm.tokenize(prompt.encode("utf-8"))
+
+        result = self.llm.create_completion(
+            prompt,
+            max_tokens=options.get("max_tokens", 32768),
+            temperature=options.get("temperature", 0.0),
+            stop=None,
+            echo=False,
+        )
+
+        response_text = result["choices"][0]["text"]
+        response_tokens = self.llm.tokenize(response_text.encode("utf-8"))
+        context_tokens = prompt_tokens + response_tokens
+
+        return {
+            "response": response_text,
+            "context": context_tokens,
+            "prompt_eval_count": len(prompt_tokens),
         }

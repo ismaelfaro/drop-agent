@@ -109,17 +109,17 @@ Estimated total layers derived from GGUF metadata if available, otherwise use co
 ### Usage examples
 
 ```bash
-# Auto-download from HuggingFace, auto-detect GPU layers
-droplet -b llama-cpp -m bartowski/Meta-Llama-3-8B-Instruct-GGUF
+# Granite 4.0 micro (3B) - fast, good for any Mac
+droplet -b llama-cpp -m ibm-granite/granite-4.0-micro-GGUF
 
-# Specific quant file
-droplet -b llama-cpp -m bartowski/Meta-Llama-3-8B-Instruct-GGUF --gguf-file Meta-Llama-3-8B-Instruct-Q5_K_M.gguf
+# Granite 4.0 tiny (7B) - better quality
+droplet -b llama-cpp -m ibm-granite/granite-4.0-tiny-preview-GGUF
 
 # Local GGUF file
-droplet -b llama-cpp -m ~/models/llama-3-8b.Q4_K_M.gguf
+droplet -b llama-cpp -m ~/models/granite-4.0-micro.Q4_K_M.gguf
 
 # Override GPU layers
-droplet -b llama-cpp -m bartowski/Meta-Llama-3-8B-Instruct-GGUF --n-gpu-layers 20
+droplet -b llama-cpp -m ibm-granite/granite-4.0-tiny-preview-GGUF --n-gpu-layers 20
 
 # gpt-oss GGUF model (uses Harmony converter automatically via model name detection)
 droplet -b llama-cpp -m some-repo/gpt-oss-20b-GGUF
